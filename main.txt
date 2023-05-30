@@ -1,0 +1,77 @@
+# Configure the AWS Provider
+provider "aws" {
+  region = "us-east-1"
+}
+
+resource "aws_instance" "web" {
+  ami                         = "ami-0bef6cc322bfff646"
+  instance_type               = "t2.micro"
+  subnet_id                   = "subnet-0cd45693ef8ffc89e"
+  vpc_security_group_ids      = ["${aws_security_group.jenkins_sg.id}"]
+  key_name                    = "MY_KP"
+  associate_public_ip_address = true
+
+  tags = {
+    "Terraform" = "Jenkins Server"
+  }
+
+  user_data = <<-EOF
+    #!/bin/bash
+    sudo yum update -y
+    sudo wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
+    sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+    sudo yum upgrade -y
+    sudo amazon-linux-extras install java-openjdk11 -y
+    sudo yum install jenkins -y
+    sudo systemctl enable jenkins
+    sudo systemctl start jenkins
+  EOF
+}
+
+resource "aws_s3_bucket" "my_jenkins_s3_bucket" {
+  bucket = "my-jenkins-s3-bucket"
+
+  tags = {
+    Name    = "My Jenkins S3 Bucket"
+    Purpose = "New Jenkins Bucket"
+  }
+}
+
+resource "aws_s3_bucket_ownership_controls" "my_new_bucket_acl" {
+  bucket = aws_s3_bucket.my_jenkins_s3_bucket.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+# Create Security Group for Jenkins
+resource "aws_security_group" "jenkins_sg" {
+  name        = "jenkins-sg"
+  description = "Jenkins Security Group"
+  vpc_id      = "vpc-06b39f8ba9ad917b7"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+output "jenkins_url" {
+  value = "http://${aws_instance.jenkins_instance.public_ip}:8080"
+}
