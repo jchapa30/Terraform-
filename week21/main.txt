@@ -1,0 +1,115 @@
+provider "aws" {
+  region = var.aws_region
+}
+
+#create security groups for instances launched in the default VPC
+resource "aws_security_group" "apache-sg" {
+  name        = "apache-sg"
+  description = "Allow inbound traffic from the internet"
+  vpc_id      = var.default_vpc
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+#create EC2 instance launch template for auto scaling group
+resource "aws_launch_template" "apache-asg" {
+  name = "apache-asg-launch"
+
+  image_id               = var.ami_id
+  instance_type          = var.instance_type
+  key_name               = "my-kp"
+  vpc_security_group_ids = [aws_security_group.apache-sg.id]
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "apache-asg"
+    }
+  }
+
+  user_data = filebase64("apache.sh")
+}
+
+#auto scaling group to launch a minimum of 2 instances and a maximum of 5 instances
+resource "aws_autoscaling_group" "apache-asg" {
+  desired_capacity    = 2
+  max_size            = 5
+  min_size            = 2
+  vpc_zone_identifier = [var.subnet_public1_us_west_1a, var.subnet_public2_us_west_1b]
+
+  launch_template {
+    id = aws_launch_template.apache-asg.id
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "apache-asg"
+    propagate_at_launch = true
+  }
+}
+
+#create an S3 bucket to be used as a remote backend
+resource "aws_s3_bucket" "apache-bucket" {
+  bucket        = "apache-2023-wk21"
+  force_destroy = true #this will help to destroy an S3 bucket that is not empty 
+}
+
+#enable versioning to keep a record of any modifications made to S3 bucket files
+resource "aws_s3_bucket_versioning" "apache-2023-wk21" {
+  bucket = aws_s3_bucket.apache-bucket.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+#block S3 bucket objects from being public 
+resource "aws_s3_bucket_public_access_block" "apache-2023-wk21" {
+  bucket                  = aws_s3_bucket.apache-bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+#create DynamoDB table for file locking of the S3 bucket backend
+resource "aws_dynamodb_table" "dynodb-table" {
+  name           = "dynamodb-2023-wk21"
+  hash_key       = "LockID" #value "LockID" is required and should remain unchanged
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 10 #free-tier eligible
+  write_capacity = 10 #free-tier eligible
+
+  attribute {
+    name = "LockID" #name "LockID" is required and should remain unchanged
+    type = "S"
+  }
+}
+terraform {
+  backend "s3" {
+    bucket = "apache-2023-wk21"
+    key    = "s3_backend.tfstate"
+    region = "us-west-1"
+    dynamodb_table = "dynamodb-2023-wk21"
+  }
+}
